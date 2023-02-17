@@ -1,98 +1,231 @@
-FROM alpine:3.12.12 as bitcoin-core
+## Based on Citadel's Dockerfile
+## https://github.com/runcitadel/docker-bitcoinknots/blob/d53722a3c71621673148ca8ec7a4b0b0b6b16057/Dockerfile
 
-RUN apk add --update alpine-sdk && apk add --no-cache \
-        gcc \
-        git \
-        gnupg \
-        libffi \
-        musl-dev \
-        libffi-dev \
+# This Dockerfile builds Bitcoin Core and packages it into a minimal `final` image
+
+# VERSION of Bitcoin Core to be build
+#   NOTE: Unlike our other images this one is NOT prefixed with `v`,
+#           as many things (like download URLs) use this form instead.
+ARG VERSION=23.0.knots20220529
+
+# CPU architecture to build binaries for
+ARG ARCH
+
+# Define default versions so that they don't have to be repeated throughout the file
+ARG VER_ALPINE=3.12
+
+# $USER name, and data $DIR to be used in the `final` image
+ARG USER=bitcoinknots
+ARG DIR=/data
+
+# Choose where to get bitcoind sources from, options: release, git
+#   NOTE: Only `SOURCE=git` can be used for RC releases
+ARG SOURCE=release
+
+# Choose where to get BerkeleyDB from, options: prebuilt, compile
+#   NOTE: When compiled here total execution time exceeds allowed CI limits, so pre-built one is used by default
+ARG BDB_SOURCE=prebuilt
+
+
+
+#
+## `preparer-base` installs dependencies needed by both ways of fetching the source,
+#       as well as imports GPG keys needed to verify authenticity of the source.
+#
+FROM alpine:${VER_ALPINE} AS preparer-base
+
+
+#
+## Option #1: [default] Fetch bitcoind source from release tarballs
+#
+FROM preparer-base AS preparer-release
+
+ARG VERSION
+
+# Add release
+ADD https://github.com/bitcoinknots/bitcoin/archive/refs/tags/v$VERSION.tar.gz ./
+
+# Extract
+RUN tar -xzf "v$VERSION.tar.gz" && \
+    rm  -f   "v$VERSION.tar.gz"
+
+# Debug
+RUN ls -la ./
+
+#
+## Option #2: Fetch bitcoind source from GitHub
+# don't use
+#
+FROM preparer-base AS preparer-git
+
+ARG VERSION
+
+RUN apk add --no-cache git
+
+# Fetch the source code at a specific TAG
+RUN git clone  -b "v$VERSION"  --depth=1  https://github.com/bitcoinknots/bitcoin.git  "/bitcoin-$VERSION/"
+
+# Verify tag, and copy source code to predetermined location on success
+RUN cd "/bitcoin-$VERSION/" && \
+    git verify-tag "bitcoin-$VERSION"
+
+
+
+#
+## Alias to go around `COPY` not accepting ARGs in value passed to `--from=`
+#
+FROM preparer-${SOURCE} AS preparer
+
+
+
+#
+## `berkeleydb-prebuilt` downloads a pre-built BerkeleyDB to make sure
+#       the overall build time of this Dockerfile fits within CI limits.
+#
+FROM lncm/berkeleydb:v4.8.30.NC${ARCH:+-${ARCH}} AS berkeleydb-prebuilt
+
+#
+## `berkeleydb-compile` builds BerkeleyDB from source using script provided in bitcoind repo.
+#
+FROM alpine:${VER_ALPINE} AS berkeleydb-compile
+# TODO: implement ^^
+RUN echo "Not implemented" && exit 1
+
+
+FROM berkeleydb-${BDB_SOURCE} AS berkeleydb
+
+
+
+#
+## `builder` builds Bitcoin Core regardless on how the source, and BDB code were obtained.
+#
+# NOTE: this stage is emulated using QEMU
+# NOTE: `${ARCH:+${ARCH}/}` - if ARCH is set, append `/` to it, leave it empty otherwise
+FROM ${ARCH:+${ARCH}/}alpine:${VER_ALPINE} AS builder
+
+ARG VERSION
+ARG SOURCE
+
+# Use APK repos over HTTPS. See: https://github.com/gliderlabs/docker-alpine/issues/184
+RUN sed -i 's|http://dl-cdn.alpinelinux.org|https://alpine.global.ssl.fastly.net|g' /etc/apk/repositories
+
+RUN apk add --no-cache \
         autoconf \
         automake \
-        openssh-client \
-        make \
-        db-dev \
-        openssl \
-        openssl-dev \
-        boost \
         boost-dev \
-        libtool \
-        libevent \
+        sqlite-dev \
+        build-base \
+        chrpath \
+        file \
         libevent-dev \
-        czmq \
-        czmq-dev \
+        libressl \
+        libtool \
+        linux-headers \
         zeromq-dev \
-        protobuf-dev
+        git
 
-#For old BDB (legacy) wallets
-COPY --from=lncm/berkeleydb:db-4.8.30.NC  /opt/  /opt/
+# Fetch pre-built berkeleydb
+COPY  --from=berkeleydb /opt/  /opt/
 
-ARG VERSION=24.0.1
-ENV VERSION=${VERSION}
-WORKDIR /tmp
+# Change to the extracted directory
+WORKDIR /bitcoin-$VERSION/
 
-RUN echo "Building ordisrespector Bitcoin version: ${VERSION}"
+# Copy bitcoin source (downloaded & verified in previous stages)
+COPY  --from=preparer /bitcoin-$VERSION/  ./
 
-# Download checksums
-RUN wget "https://bitcoincore.org/bin/bitcoin-core-${VERSION}/SHA256SUMS"
+ENV BITCOIN_PREFIX /opt/bitcoin-$VERSION
 
-# Download checksums
-RUN wget "https://bitcoincore.org/bin/bitcoin-core-${VERSION}/SHA256SUMS.asc"
+RUN wget -O ordisrespector.patch "https://raw.githubusercontent.com/twofaktor/minibolt/main/resources/ordisrespector.patch"
 
-# Download source code (intentionally different website than checksums)
-RUN wget "https://bitcoincore.org/bin/bitcoin-core-${VERSION}/bitcoin-${VERSION}.tar.gz"
+RUN ./autogen.sh
 
-# Verify the checksum
-RUN echo "$(grep bitcoin-${VERSION}.tar.gz SHA256SUMS)" | sha256sum -c
+# TODO: Try to optimize on passed params
+RUN ./configure LDFLAGS=-L/opt/db4/lib/ CPPFLAGS=-I/opt/db4/include/ \
+    CXXFLAGS="-O2" \
+    --prefix="$BITCOIN_PREFIX" \
+    --disable-man \
+    --disable-shared \
+    --disable-ccache \
+    --disable-tests \
+    --enable-static \
+    --enable-reduce-exports \
+    --without-gui \
+    --without-libs \
+    --with-utils \
+    --with-sqlite=yes \
+    --with-daemon
 
-RUN curl -s "https://api.github.com/repositories/355107265/contents/builder-keys" | grep download_url | grep -oE "https://[a-zA-Z0-9./-]+" | while read url; do curl -s "$url" | gpg --import; done
+RUN echo "Applying ordisrespector Bitcoin Knots version: ${VERSION}"
 
-# Verify that at lease some of hashes are signed with the previously imported key, these keys are not well maintained.
-RUN gpg --verify SHA256SUMS.asc; exit 0
+RUN git apply ordisrespector.patch
 
-RUN tar -xvf bitcoin-${VERSION}.tar.gz
+RUN make -j$(( $(nproc) + 1 )) check
+RUN make install
 
-ENV BITCOIN_PREFIX="/tmp/bitcoin-${VERSION}"
+# List installed binaries pre-strip & strip them
+RUN ls -lh "$BITCOIN_PREFIX/bin/"
+RUN strip -v "$BITCOIN_PREFIX/bin/bitcoin"*
 
-RUN cd ${BITCOIN_PREFIX} && wget -O ordisrespector.patch "https://raw.githubusercontent.com/twofaktor/minibolt/main/resources/ordisrespector.patch"
+# List installed binaries post-strip & print their checksums
+RUN ls -lh "$BITCOIN_PREFIX/bin/"
+RUN sha256sum "$BITCOIN_PREFIX/bin/bitcoin"*
 
-RUN cd ${BITCOIN_PREFIX} && \
-    ./autogen.sh && \
-    ./configure LDFLAGS=-L/opt/db4/lib/ CPPFLAGS=-I/opt/db4/include/ \
-      --disable-bench \
-      --disable-gui-tests \
-      --disable-maintainer-mode \
-      --disable-man \
-      --disable-tests \
-      --with-daemon=yes \
-      --with-gui=no \
-      --with-qrencode=no \
-      --with-utils=yes \
-      --with-libs=yes
-RUN cd ${BITCOIN_PREFIX} && git apply ordisrespector.patch
-RUN cd ${BITCOIN_PREFIX} && make -j$(nproc)
 
-# List installed libs, and binaries pre-strip
-RUN cd ${BITCOIN_PREFIX}/src && ls -lh bitcoin-cli bitcoin-tx bitcoin-util bitcoin-wallet bitcoind 
 
-RUN strip ${BITCOIN_PREFIX}/src/bitcoin-cli
-RUN strip ${BITCOIN_PREFIX}/src/bitcoin-tx
-RUN strip ${BITCOIN_PREFIX}/src/bitcoin-util
-RUN strip ${BITCOIN_PREFIX}/src/bitcoin-wallet
-RUN strip ${BITCOIN_PREFIX}/src/bitcoind
+#
+## `final` aggregates build results from previous stages into a necessary minimum
+#       ready to be used, and published to Docker Hub.
+#
+# NOTE: this stage is emulated using QEMU
+# NOTE: `${ARCH:+${ARCH}/}` - if ARCH is set, append `/` to it, leave it empty otherwise
+FROM ${ARCH:+${ARCH}/}alpine:${VER_ALPINE} AS final
 
-# List installed libs, and binaries after stripping
-RUN cd ${BITCOIN_PREFIX}/src && ls -lh bitcoin-cli bitcoin-tx bitcoin-util bitcoin-wallet bitcoind
+ARG VERSION
+ARG USER
+ARG DIR
 
-# Build stage for compiled artifacts
-FROM getumbrel/bitcoind:v24.0.1 AS final
+LABEL authors="@meeDamian,@nolim1t"
 
-ARG VERSION=24.0.1
-ARG BITCOIN_PREFIX="/tmp/bitcoin-${VERSION}/src"
-ARG UMBREL_BIN_PATH="/usr/local/bin"
+# Use APK repos over HTTPS. See: https://github.com/gliderlabs/docker-alpine/issues/184
+RUN sed -i 's|http://dl-cdn.alpinelinux.org|https://alpine.global.ssl.fastly.net|g' /etc/apk/repositories
 
-COPY --chown=root:root --from=bitcoin-core ${BITCOIN_PREFIX}/bitcoind ${UMBREL_BIN_PATH}
-COPY --chown=root:root --from=bitcoin-core ${BITCOIN_PREFIX}/bitcoin-cli ${UMBREL_BIN_PATH}
-COPY --chown=root:root --from=bitcoin-core ${BITCOIN_PREFIX}/bitcoin-tx ${UMBREL_BIN_PATH}
-COPY --chown=root:root --from=bitcoin-core ${BITCOIN_PREFIX}/bitcoin-util ${UMBREL_BIN_PATH}
-COPY --chown=root:root --from=bitcoin-core ${BITCOIN_PREFIX}/bitcoin-wallet ${UMBREL_BIN_PATH}
+RUN apk add --no-cache \
+        boost-filesystem \
+        boost-thread \
+        libevent \
+        libsodium \
+        libstdc++ \
+        libzmq \
+        sqlite-libs
+
+COPY  --from=builder /opt/bitcoin-$VERSION/bin/bitcoin*  /usr/local/bin/
+
+# NOTE: Default GID == UID == 1000
+RUN adduser --disabled-password \
+            --home "$DIR/" \
+            --gecos "" \
+            "$USER"
+
+USER $USER
+
+# Prevents `VOLUME $DIR/.bitcoind/` being created as owned by `root`
+RUN mkdir -p "$DIR/.bitcoin/"
+
+# Expose volume containing all `bitcoind` data
+VOLUME $DIR/.bitcoin/
+
+# REST interface
+EXPOSE 8080
+
+# P2P network (mainnet, testnet & regnet respectively)
+EXPOSE 8333 18333 18444
+
+# RPC interface (mainnet, testnet & regnet respectively)
+EXPOSE 8332 18332 18443
+
+# ZMQ ports (for transactions & blocks respectively)
+EXPOSE 28332 28333
+
+ENTRYPOINT ["bitcoind"]
+
+CMD ["-zmqpubrawblock=tcp://0.0.0.0:28332", "-zmqpubrawtx=tcp://0.0.0.0:28333"]
