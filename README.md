@@ -37,7 +37,7 @@ Then
 and change the bitcoind image to remove the hash part and replace with the tag:
 
 ```sh
-~ $ sed -i 's/ghcr\.io\/runcitadel\/bitcoinknots:main@sha256:\.\?[a-zA-Z0-9]\{64\}/runcitadel\/bitcoinknots:v23\.0/g' ~/citadel/docker-compose.yml
+~ $ sed -i 's/ghcr\.io\/runcitadel\/bitcoinknots:main@sha256:\.\?[a-zA-Z0-9]\{64\}/runcitadel\/bitcoinknots:v23\.0/g' ~/citadel/services/bitcoin/knots.yml
 ```
 Then
 
