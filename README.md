@@ -1,5 +1,9 @@
 # Citadel Bitcoin Node #ordisrespector hack
-This guide is heavily based on [Citadel's Bitcoin Node #ordirespector hack](https://github.com/printer-jam/Citadel-ordisrespector)
+This guide is heavily based on [Umbrel's Bitcoin Node #ordirespector hack](https://github.com/printer-jam/umbrel-ordisrespector)
+
+With this guide you can copy&paste some terminal commands to get your node patched. 
+
+Keep in mind that future node updates will break this patch.
 
 **Citadel node #ordisrespector hack**
 Do it at your own risk.
@@ -27,7 +31,6 @@ Then
 ```sh
 ~ $ docker tag $(docker images | grep "ghcr.io/runcitadel/bitcoinknots" | awk '{ print $3 }') runcitadel/bitcoinknots:original
 ~ $ docker tag ordisrespector/bitcoinknots:v23.0 runcitadel/bitcoinknots:v23.0
-~ $ sed -i 's/ghcr\.io\/runcitadel\/bitcoinknots:main@sha256:\.\?[a-zA-Z0-9]\{64\}/runcitadel\/bitcoinknots:v23\.0/g' ~/citadel/docker-compose.yml
 ```
 
 ## Edit the bitcoind docker-compose.yml
