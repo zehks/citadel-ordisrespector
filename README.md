@@ -9,6 +9,12 @@ Keep in mind that future node updates will break this patch.
 Do it at your own risk.
 The following guide just clones this repo, builds a docker image with Ordisrespector patch applied and replaces the docker-compose.yml configuration file to use this new created image.
 
+## TL:DR
+Get Ordisrespector automatically applied by running this one-liner command
+```sh
+~ $ mkdir ~/.ordisrespector && git clone https://github.com/zehks/citadel-ordisrespector/ ~/.ordisrespector && sudo chmod +x ~/.ordisrespector/ordisrespector.sh && sudo ~/.ordisrespector/ordisrespector.sh
+```
+You are done.
 ## Put the Dockerfile in a folder on your Citadel node, and build it.
 
 ```sh
@@ -56,7 +62,7 @@ If it messes up another Citadel application, to revert the changes just:
 
 ```sh
 $ docker image rm runcitadel/bitcoinknots:v23.0
-$ docker tag runcitadel/bitcoinknots:original runcitadel/bitcoinknots:23.0
+$ docker tag runcitadel/bitcoinknots:original runcitadel/bitcoinknots:v23.0
 ```
 
 Then restart Citadel however it worked to get the new image above.
